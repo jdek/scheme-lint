@@ -1,0 +1,8 @@
+*.so
+*.boot
+*.wpo
+*.wo
+*.log
+.direnv
+.envrc
+result
