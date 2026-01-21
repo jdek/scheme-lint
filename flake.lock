@@ -18,6 +18,24 @@
         "type": "github"
       }
     },
+    "flakelight-chez": {
+      "inputs": {
+        "flakelight": "flakelight"
+      },
+      "locked": {
+        "lastModified": 1768965781,
+        "narHash": "sha256-55IyUBnXSI8pKoq5antTfAYQtq4vSkuDdLrFTO2iRDU=",
+        "owner": "jdek",
+        "repo": "flakelight-chez",
+        "rev": "6bc5bed4d143d5b61b0f05a10b243d41b8915c2b",
+        "type": "github"
+      },
+      "original": {
+        "owner": "jdek",
+        "repo": "flakelight-chez",
+        "type": "github"
+      }
+    },
     "nixpkgs": {
       "locked": {
         "lastModified": 1768564909,
@@ -36,7 +54,7 @@
     },
     "root": {
       "inputs": {
-        "flakelight": "flakelight"
+        "flakelight-chez": "flakelight-chez"
       }
     }
   },

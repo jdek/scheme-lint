@@ -96,7 +96,7 @@ The DSL makes it easy to write custom rules:
 - **div-not-quotient**: Prefer R6RS `div`/`mod` over `quotient`/`modulo` (auto-fix)
 - **import-order**: Enforce import ordering (rnrs → local → chezscheme) (auto-fix)
 - **import-only-chez**: Require explicit `(only ...)` for chezscheme imports
-- **no-emacs-docstrings**: Detect invalid docstring syntax
+- **no-emacs-docstrings**: Detect invalid docstring syntax (auto-fix)
 - **no-rnrs-all**: Disallow importing entire `(rnrs)` library
 
 ## Project Structure
