@@ -104,7 +104,7 @@ scheme-lint/
 │   ├── reader.sls         # Source reader with location tracking
 │   ├── matcher.sls        # Pattern matching
 │   └── rules/builtin.sls  # Built-in rules
-├── bin/scheme-lint        # CLI tool
+├── scheme-lint.ss         # CLI tool
 ├── rules/                 # Default rules
 │   ├── standard/          # Production rules
 │   └── examples/          # Example rules for learning

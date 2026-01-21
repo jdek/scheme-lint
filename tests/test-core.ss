@@ -1,9 +1,10 @@
 #!/usr/bin/env scheme --script
 ;;=======================================================================
-;; test-core.ss - Test the linter with some violations
+;; test-core.ss - Test the CST-based linter
 ;;=======================================================================
 
-(import (rnrs)
+(import (rnrs base)
+        (rnrs io simple)
         (only (chezscheme) pretty-print)
         (scheme-lint core)
         (scheme-lint reader)
@@ -22,7 +23,7 @@
      (define (bar a b)
        (modulo a b)))")
 
-;; Simple test rules
+;; Simple test rules using CST
 (define test-rules
   (list
     ;; Rule 1: quotient -> div
@@ -41,34 +42,29 @@
               "Use 'mod' instead of 'modulo'"
               #f)
 
-    ;; Rule 3: no (rnrs) import
+    ;; Rule 3: no (rnrs) import - CST version
     (make-lint-rule 'no-rnrs-all
               '(import . ?imports)
               (lambda (bindings expr)
-                (let ((imps (cdr (assq '?imports bindings))))
-                  (if (annotated? imps)
-                      (let ((imp-expr (annotated-expr imps)))
-                        (and (pair? imp-expr)
-                             (let check ((lst imp-expr))
-                               (cond
-                                 ((null? lst) #f)
-                                 (else
-                                   (let ((item (car lst)))
-                                     (let ((raw (if (annotated? item)
-                                                   (annotated-expr item)
-                                                   item)))
-                                       (if (and (pair? raw)
-                                               (eq? (car raw) 'rnrs)
-                                               (null? (cdr raw)))
-                                           #t
-                                           (check (cdr lst))))))))))
-                      #f)))
+                (let ((imps (get-binding bindings '?imports)))
+                  (let check ((lst imps))
+                    (cond
+                      ((null? lst) #f)
+                      (else
+                        (let ((item (car lst)))
+                          (if (and (cst-list? item)
+                                   (let ((children (semantic-children item)))
+                                     (and (= 1 (length children))
+                                          (cst-atom? (car children))
+                                          (eq? 'rnrs (cst-atom-value (car children))))))
+                              #t
+                              (check (cdr lst)))))))))
               severity/warning
               "Import specific (rnrs ...) modules instead of all of (rnrs)"
               #f)))
 
 (define (test-linter)
-  (display "Testing linter...\n\n")
+  (display "Testing CST-based linter...\n\n")
   (display "Test code:\n")
   (display test-code)
   (display "\n\n")

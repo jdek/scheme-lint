@@ -12,13 +12,14 @@
       (cond
         ((null? imps) #f)
         (else
-          (let* ((imp (car imps))
-                 (imp-expr (if (annotated? imp) (annotated-expr imp) imp)))
+          (let ((imp (car imps)))
             (cond
               ;; (rnrs) alone - violation
-              ((and (pair? imp-expr)
-                    (null? (cdr imp-expr))
-                    (eq? (car imp-expr) 'rnrs))
+              ((and (cst-list? imp)
+                    (let ((children (semantic-children imp)))
+                      (and (= 1 (length children))
+                           (cst-atom? (car children))
+                           (eq? 'rnrs (cst-atom-value (car children))))))
                #t)
 
               ;; Other imports

@@ -1,5 +1,5 @@
 ;;=============================================================================
-;; core.sls - Pluggable linter for Scheme code
+;; core.sls - Pluggable linter for Scheme code (CST-based)
 ;;=============================================================================
 ;; SPDX-License-Identifier: WTFPL
 
@@ -34,19 +34,31 @@
 
           ;; Exports for discovery system
           eval-rule-dsl
-          make-plugin-environment)
+          make-plugin-environment
 
-  (import (rnrs)
+          ;; Helpers for fix expressions
+          string-contains
+          string-replace-first)
+
+  (import (rnrs base)
+          (rnrs control)
+          (rnrs lists)
+          (rnrs sorting)
           (rnrs eval)
           (rnrs io ports)
           (rnrs io simple)
+          (rnrs files)
+          (rnrs exceptions)
+          (rnrs conditions)
+          (rnrs records syntactic)
+          (prefix (chezscheme) chez:)
           (scheme-lint reader)
           (scheme-lint matcher))
 
 ;;=============================================================================
 ;; Version
 
-(define scheme-lint-version "1.0.0")
+(define scheme-lint-version "2.0.0")
 
 ;;=============================================================================
 ;; Severity Levels
@@ -64,7 +76,7 @@
 ;; - predicate: (lambda (bindings expr) => boolean) - additional check
 ;; - severity: error/warning/style
 ;; - message: string or (lambda (bindings expr) => string)
-;; - fixer: #f or (lambda (bindings expr) => new-expr)
+;; - fixer: #f or (lambda (bindings expr) => string) - replacement text
 
 (define-record-type (lint-rule make-lint-rule lint-rule?)
   (nongenerative)
@@ -115,74 +127,74 @@
     (lint-port port filename rules)))
 
 (define (lint-port port filename rules)
-  (let read-all ((exprs '()))
-    (let ((expr (read-annotated port filename)))
-      (if (eof-object? expr)
-          (let ((tree (reverse exprs)))
+  ;; Lint all CST nodes from port
+  (let read-all ((nodes '()))
+    (let ((node (read-cst port filename)))
+      (if (eof-object? node)
+          (let ((tree (reverse nodes)))
             (apply append (map (lambda (rule)
-                                (find-violations rule tree))
+                                (find-violations rule tree filename))
                               rules)))
-          (read-all (cons expr exprs))))))
+          (read-all (cons node nodes))))))
 
-(define (find-violations rule tree)
+(define (find-violations rule tree filename)
+  ;; Find all violations of rule in CST tree
   (let ((matches (find-matches (lint-rule-pattern rule)
                                (lint-rule-predicate rule)
                                tree)))
     (map (lambda (match)
            (let ((bindings (car match))
-                 (expr (cdr match)))
-             (make-lint-violation-from-rule rule bindings expr)))
+                 (node (cdr match)))
+             (make-lint-violation-from-rule rule bindings node filename)))
          matches)))
 
 (define (find-matches pattern predicate tree)
+  ;; Find all CST nodes matching pattern and predicate
   (let ((all-matches
           (apply append
-                 (map (lambda (expr)
+                 (map (lambda (node)
                         (walk-tree
-                          (lambda (node)
-                            (let ((bindings (match-pattern pattern node '())))
-                              (if (and bindings (predicate bindings node))
-                                  (cons bindings node)
+                          (lambda (n)
+                            (let ((bindings (match-pattern pattern n '())))
+                              (if (and bindings (predicate bindings n))
+                                  (cons bindings n)
                                   #f)))
-                          expr))
+                          node))
                       tree))))
     ;; Deduplicate by source location
     (dedup-by-location all-matches)))
 
 (define (dedup-by-location matches)
+  ;; Remove duplicate matches at same source location
   (let loop ((matches matches)
              (seen '())
              (result '()))
     (if (null? matches)
         (reverse result)
         (let* ((match (car matches))
-               (expr (cdr match))
-               (loc (if (annotated? expr)
-                       (annotated-source expr)
-                       #f))
-               (loc-key (if loc
-                           (cons (source-location-file loc)
-                                 (cons (source-location-line loc)
-                                       (source-location-column loc)))
-                           #f)))
-          (if (and loc-key (member loc-key seen))
+               (node (cdr match))
+               (loc-key (cons (cst-node-start-line node)
+                             (cst-node-start-column node))))
+          (if (member loc-key seen)
               (loop (cdr matches) seen result)
               (loop (cdr matches)
-                    (if loc-key (cons loc-key seen) seen)
+                    (cons loc-key seen)
                     (cons match result)))))))
 
-(define (make-lint-violation-from-rule rule bindings expr)
-  (let* ((location (if (annotated? expr)
-                      (annotated-source expr)
-                      #f))
-         (code (expr->string expr))
+(define (make-lint-violation-from-rule rule bindings node filename)
+  ;; Create violation from rule match
+  (let* ((location (make-source-location
+                     filename
+                     (cst-node-start-line node)
+                     (cst-node-start-column node)))
+         (code (cst-node-text node))
          (message-fn (lint-rule-message rule))
          (message (if (procedure? message-fn)
-                     (message-fn bindings expr)
+                     (message-fn bindings node)
                      message-fn))
          (fixer (lint-rule-fixer rule))
          (fix (if fixer
-                 (fixer bindings expr)
+                 (fixer bindings node)
                  #f)))
     (make-lint-violation (lint-rule-severity rule)
                    message
@@ -191,40 +203,81 @@
                    fix)))
 
 ;;=============================================================================
-;; Auto-fixing
+;; Auto-fixing (REAL IMPLEMENTATION)
 
 ;; apply-fixes : list string => void
 ;;   effects: io/read io/write
 ;;   Applies fixes from violations to file.
 (define (apply-fixes violations file-path)
-  (when (file-exists? file-path)
+  ;; Apply all auto-fixes to file
+  (when (and (file-exists? file-path)
+             (not (null? (filter lint-violation-fix violations))))
     (let* ((fixes (filter lint-violation-fix violations))
            (content (call-with-input-file file-path
                      (lambda (port)
-                       (let read-all ((chars '()))
-                         (let ((ch (get-char port)))
-                           (if (eof-object? ch)
-                               (list->string (reverse chars))
-                               (read-all (cons ch chars))))))))
-           (fixed (apply-fixes-to-string content fixes)))
-      (with-output-to-file file-path
-         (lambda () (display fixed))))))
+                       (get-string-all port))))
+           (fixed (apply-fixes-to-string content fixes))
+           (temp-path (string-append file-path ".tmp")))
+      ;; Write to temp file using R6RS open-file-output-port, then atomically rename
+      (when (file-exists? temp-path)
+        (delete-file temp-path))
+      (let ((port (open-file-output-port temp-path
+                                         (file-options no-fail)
+                                         (buffer-mode block)
+                                         (native-transcoder))))
+        (put-string port fixed)
+        (close-port port))
+      (delete-file file-path)
+      (chez:rename-file temp-path file-path))))
 
 (define (apply-fixes-to-string content fixes)
-  ;; Sort fixes by location (reverse order to avoid offset issues)
+  ;; Apply all fixes to string content
+  ;; Sort fixes by position (reverse order to avoid offset issues)
   (let ((sorted-fixes (list-sort
                         (lambda (a b)
                           (let ((loc-a (lint-violation-location a))
                                 (loc-b (lint-violation-location b)))
                             (if (and loc-a loc-b)
-                                (or (> (source-location-line loc-a) (source-location-line loc-b))
-                                    (and (= (source-location-line loc-a) (source-location-line loc-b))
-                                         (> (source-location-column loc-a) (source-location-column loc-b))))
+                                (or (> (source-location-line loc-a)
+                                      (source-location-line loc-b))
+                                    (and (= (source-location-line loc-a)
+                                           (source-location-line loc-b))
+                                         (> (source-location-column loc-a)
+                                            (source-location-column loc-b))))
                                 #f)))
                         fixes)))
-    ;; For now, just return original content
-    ;; Full implementation would apply text edits based on locations
-    content))
+    ;; Apply each fix
+    (fold-left apply-single-fix content sorted-fixes)))
+
+(define (apply-single-fix content fix)
+  ;; Apply single fix to content
+  (let* ((location (lint-violation-location fix))
+         (code (lint-violation-code fix))
+         (replacement (lint-violation-fix fix)))
+    ;; Find the position of the code to replace
+    ;; For now, use simple string replacement
+    ;; TODO: Use precise character positions from CST
+    (string-replace-first content code replacement)))
+
+(define (string-replace-first str old new)
+  ;; Replace first occurrence of old with new in str
+  (let ((idx (string-contains str old)))
+    (if idx
+        (string-append (substring str 0 idx)
+                      new
+                      (substring str (+ idx (string-length old))
+                                (string-length str)))
+        str)))
+
+(define (string-contains str substr)
+  ;; Find index of substr in str, or #f
+  (let ((slen (string-length str))
+        (sslen (string-length substr)))
+    (let loop ((i 0))
+      (cond
+        ((> (+ i sslen) slen) #f)
+        ((string=? (substring str i (+ i sslen)) substr) i)
+        (else (loop (+ i 1)))))))
 
 ;;=============================================================================
 ;; Rule Loading
@@ -249,13 +302,14 @@
                (loop (read port) rules))))))))
 
 (define (make-plugin-environment)
+  ;; Create environment for rule evaluation
   (environment '(rnrs)
-               '(rnrs mutable-pairs)
                '(scheme-lint core)
                '(scheme-lint reader)
                '(scheme-lint matcher)))
 
 (define (eval-rule-dsl expr)
+  ;; Evaluate DSL rule form
   (unless (and (pair? expr) (eq? (car expr) 'rule))
     (error 'eval-rule-dsl "Expected (rule ...) form" expr))
 
@@ -280,34 +334,54 @@
       (compile-where-clause where)
       severity
       message
-      #f)))
+      (if fix (compile-fix-clause fix) #f))))
 
 (define (compile-where-clause where-expr)
+  ;; Compile where clause into predicate function
   (if (eq? where-expr #t)
-      (lambda (bindings expr) #t)
-      ;; The where clause will be evaluated with bindings, expr, and helpers in scope
-      ;; We wrap it in a lambda and eval that
-      (let* ((wrapped-expr `(lambda (bindings expr)
-                             (let ((get-binding (lambda (bindings name)
-                                                 ;; Fully unwrap annotated values from bindings
-                                                 (let* ((pair (assq name bindings))
-                                                        (value (if pair (cdr pair) #f)))
-                                                   (unwrap-annotated value)))))
-                               ,where-expr)))
-             (env (environment '(rnrs)
-                              '(scheme-lint reader)
-                              '(scheme-lint matcher))))
+      (lambda (bindings node) #t)
+      ;; Evaluate where clause with CST helpers in scope
+      (let* ((wrapped-expr
+              `(lambda (bindings expr)
+                 ;; Define CST helpers
+                 (define (get-binding bindings name)
+                   (let ((pair (assq name bindings)))
+                     (if pair (cdr pair) #f)))
+
+                 (define (get-semantic-value bindings name)
+                   (let ((node (get-binding bindings name)))
+                     (if node (cst->sexp node) #f)))
+
+                 ;; CST type predicates available
+                 (let ((cst-atom? cst-atom?)
+                       (cst-list? cst-list?)
+                       (cst-string? cst-string?)
+                       (cst-comment? cst-comment?)
+                       (cst-whitespace? cst-whitespace?)
+                       (cst-quote? cst-quote?)
+                       (cst-vector? cst-vector?)
+                       (cst-atom-value cst-atom-value)
+                       (cst-string-value cst-string-value)
+                       (cst-list-children cst-list-children)
+                       (cst-vector-children cst-vector-children)
+                       (cst-node-text cst-node-text)
+                       (semantic-children semantic-children)
+                       (trivia-node? trivia-node?)
+                       (cst->sexp cst->sexp))
+                   ,where-expr)))
+             (env (make-plugin-environment)))
         (eval wrapped-expr env))))
+
+(define (compile-fix-clause fix-expr)
+  ;; Compile fix clause into fixer function (bindings node -> string)
+  (let ((env (make-plugin-environment)))
+    (eval fix-expr env)))
 
 ;;=============================================================================
 ;; Utilities
 
-(define (expr->string expr)
-  (let ((raw (if (annotated? expr)
-                 (annotated-expr expr)
-                 expr)))
-    (call-with-string-output-port
-      (lambda (port)
-        (write raw port)))))
+(define (expr->string node)
+  ;; Convert CST node to string representation
+  (cst-node-text node))
 
 ) ;; end library

@@ -13,10 +13,8 @@
           (rest (get-binding bindings '?rest)))
       (and first
            rest
-           (pair? rest)  ;; There's more body after the string
-           (if (annotated? first)
-               (string? (annotated-expr first))
-               (string? first)))))
+           (pair? rest)  ; There's more body after the string
+           (cst-string? first))))  ; CST: use cst-string? predicate
 
   (severity warning)
 

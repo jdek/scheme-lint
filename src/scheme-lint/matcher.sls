@@ -1,28 +1,37 @@
 ;;=============================================================================
-;; matcher.sls - Pattern matching for annotated s-expressions
+;; matcher.sls - Pattern matching for CST nodes
 ;;=============================================================================
 ;; SPDX-License-Identifier: WTFPL
+;;
+;; Pattern matching engine that works on CST while ignoring trivia.
+;; Patterns match semantic structure (atoms, lists, etc.) and automatically
+;; skip whitespace and comments.
 
 (library (scheme-lint matcher)
   (export match-pattern
           walk-tree
+          walk-tree-with-trivia
           pattern-var?
           pattern-splice?
-          unwrap-annotated)
-  (import (rnrs)
+          get-binding
+          get-semantic-value)
+  (import (rnrs base)
+          (rnrs control)
+          (rnrs lists)
           (scheme-lint reader))
 
 ;;=============================================================================
 ;; Pattern Syntax
 
 ;; Pattern syntax:
-;; - ?var         : capture single expression
-;; - (?var ...)   : capture zero or more expressions (splice)
+;; - ?var         : capture single CST node
+;; - (?var ...)   : capture zero or more CST nodes (splice)
 ;; - (?head . ?rest) : capture dotted pair
 ;; - literal      : must match exactly (symbol, number, string, boolean)
-;; - (patterns...) : match list structure
+;; - (patterns...) : match list structure (ignores trivia)
 
 (define (pattern-var? x)
+  ;; Check if x is a pattern variable (?foo)
   (and (symbol? x)
        (let ((str (symbol->string x)))
          (and (>= (string-length str) 2)
@@ -30,6 +39,7 @@
               (not (char=? (string-ref str 1) #\.))))))
 
 (define (pattern-splice? pattern)
+  ;; Check if pattern is a splice (?var ...)
   (and (pair? pattern)
        (pair? (cdr pattern))
        (null? (cddr pattern))
@@ -37,186 +47,208 @@
        (eq? (cadr pattern) '...)))
 
 (define (pattern-rest? x)
+  ;; Check if x is the ellipsis symbol
   (eq? x '...))
 
-(define (unwrap-annotated expr)
-  (cond
-    ((annotated? expr)
-     (unwrap-annotated (annotated-expr expr)))
-    ((pair? expr)
-     (cons (unwrap-annotated (car expr))
-           (unwrap-annotated (cdr expr))))
-    ((vector? expr)
-     (vector-map unwrap-annotated expr))
-    (else expr)))
+;;=============================================================================
+;; Binding Helpers
+
+(define (get-binding bindings name)
+  ;; Get CST node bound to name in bindings alist
+  (let ((pair (assq name bindings)))
+    (if pair (cdr pair) #f)))
+
+(define (get-semantic-value bindings name)
+  ;; Get semantic value (unwrapped) bound to name
+  (let ((node (get-binding bindings name)))
+    (if node (cst->sexp node) #f)))
 
 ;;=============================================================================
 ;; Pattern Matching
 
-;; match-pattern : pattern expr alist => alist | #f
-;;   Matches pattern against expr, accumulating bindings.
-(define (match-pattern pattern expr bindings)
-  (let ((raw-expr (if (annotated? expr)
-                      (annotated-expr expr)
-                      expr)))
-    (cond
-      ;; Pattern variable - capture anything
-      ((pattern-var? pattern)
-       (cons (cons pattern expr) bindings))
-
-      ;; Both are pairs - match structure
-      ((and (pair? pattern) (pair? raw-expr))
-       (match-list pattern expr bindings))
-
-      ;; Both are vectors - match elements
-      ((and (vector? pattern) (vector? raw-expr))
-       (match-vector pattern expr bindings))
-
-      ;; Atoms must match exactly
-      ((and (not (pair? pattern))
-            (not (vector? pattern))
-            (not (pair? raw-expr))
-            (not (vector? raw-expr)))
-       (if (equal? pattern raw-expr)
-           bindings
-           #f))
-
-      ;; Type mismatch
-      (else #f))))
-
-(define (match-list pattern expr bindings)
-  (let ((raw-expr (if (annotated? expr)
-                      (annotated-expr expr)
-                      expr)))
-
-    (cond
-      ;; Empty pattern and empty list - success
-      ((and (null? pattern) (null? raw-expr))
-       bindings)
-
-      ;; Pattern exhausted but list has more - failure
-      ((null? pattern)
-       #f)
-
-      ;; List exhausted but pattern has more - failure
-      ((null? raw-expr)
-       #f)
-
-      ;; Splice pattern: (?var ...)
-      ((and (pair? pattern)
-            (pair? (cdr pattern))
-            (not (null? (cdr pattern)))
-            (pattern-var? (car pattern))
-            (pattern-rest? (cadr pattern)))
-       (let* ((var (car pattern))
-              (rest-pattern (cddr pattern))
-              (required-count (length rest-pattern))
-              (available (list-length raw-expr)))
-         (if (or (not available) (< available required-count))
-             #f
-             (let* ((splice-count (- available required-count))
-                    (splice-elements (take-list raw-expr splice-count))
-                    (rest-elements (drop-list raw-expr splice-count))
-                    (new-bindings (cons (cons var splice-elements) bindings)))
-               (match-list-elements rest-pattern rest-elements new-bindings)))))
-
-      ;; Dotted pair pattern: (pattern . ?rest)
-      ((and (pair? pattern)
-            (not (list? pattern))
-            (pattern-var? (cdr pattern)))
-       (let ((result (match-pattern (car pattern) (car raw-expr) bindings)))
-         (if result
-             ;; Bind to cdr of ANNOTATED expr, not raw-expr, to preserve annotations
-             (cons (cons (cdr pattern) (cdr (if (annotated? expr) (annotated-expr expr) expr))) result)
-             #f)))
-
-      ;; Regular list matching
-      (else
-       ;; Guard against improper lists (dotted pairs) in the data.
-       ;; e.g., pattern (+ ?a ?b) vs data (+ . -)
-       ;; After matching +, (cdr raw-expr) would be -, an atom, not a list
-       (if (not (pair? raw-expr))
-           #f
-           (let ((result (match-pattern (car pattern) (car raw-expr) bindings)))
-             (if result
-                 (match-list (cdr pattern) (cdr raw-expr) result)
-                 #f)))))))
-
-(define (match-list-elements patterns exprs bindings)
+;; match-pattern : pattern cst-node alist → alist | #f
+;;   Matches pattern against CST node, accumulating bindings.
+;;   Automatically skips trivia when matching list structures.
+(define (match-pattern pattern node bindings)
   (cond
-    ((and (null? patterns) (null? exprs))
+    ;; Pattern variable - capture the CST node
+    ((pattern-var? pattern)
+     (cons (cons pattern node) bindings))
+
+    ;; Both are lists - match semantic children (skip trivia)
+    ((and (pair? pattern) (cst-list? node))
+     (match-list pattern (semantic-children node) bindings))
+
+    ;; Both are vectors - match semantic children
+    ((and (vector? pattern) (cst-vector? node))
+     (match-vector pattern (semantic-children node) bindings))
+
+    ;; Atom matching - compare values
+    ((and (not (pair? pattern))
+          (not (vector? pattern))
+          (cst-atom? node))
+     (if (equal? pattern (cst-atom-value node))
+         bindings
+         #f))
+
+    ;; String matching
+    ((and (string? pattern) (cst-string? node))
+     (if (equal? pattern (cst-string-value node))
+         bindings
+         #f))
+
+    ;; Quote matching
+    ((and (pair? pattern)
+          (memq (car pattern) '(quote quasiquote unquote unquote-splicing))
+          (cst-quote? node))
+     (if (eq? (car pattern) (cst-quote-type node))
+         (match-pattern (cadr pattern) (cst-quote-expr node) bindings)
+         #f))
+
+    ;; Type mismatch
+    (else #f)))
+
+(define (match-list pattern nodes bindings)
+  ;; Match list pattern against list of CST nodes (trivia already filtered)
+  (cond
+    ;; Empty pattern and empty list - success
+    ((and (null? pattern) (null? nodes))
      bindings)
-    ((or (null? patterns) (null? exprs))
+
+    ;; Pattern exhausted but nodes remain - failure
+    ((null? pattern)
      #f)
-    (else
-     (let ((result (match-pattern (car patterns) (car exprs) bindings)))
+
+    ;; Nodes exhausted but pattern remains - failure
+    ((null? nodes)
+     #f)
+
+    ;; Splice pattern: (?var ...)
+    ((and (pair? pattern)
+          (pair? (cdr pattern))
+          (not (null? (cdr pattern)))
+          (pattern-var? (car pattern))
+          (pattern-rest? (cadr pattern)))
+     (let* ((var (car pattern))
+            (rest-pattern (cddr pattern))
+            (required-count (length rest-pattern))
+            (available (length nodes)))
+       (if (< available required-count)
+           #f
+           (let* ((splice-count (- available required-count))
+                  (splice-nodes (take-list nodes splice-count))
+                  (rest-nodes (drop-list nodes splice-count))
+                  ;; Bind to list of CST nodes
+                  (new-bindings (cons (cons var splice-nodes) bindings)))
+             (match-list-elements rest-pattern rest-nodes new-bindings)))))
+
+    ;; Dotted pair pattern: (pattern . ?rest)
+    ((and (pair? pattern)
+          (not (list? pattern))
+          (pattern-var? (cdr pattern)))
+     (let ((result (match-pattern (car pattern) (car nodes) bindings)))
        (if result
-           (match-list-elements (cdr patterns) (cdr exprs) result)
+           ;; Bind ?rest to remaining CST nodes (as a list)
+           (cons (cons (cdr pattern) (cdr nodes)) result)
+           #f)))
+
+    ;; Regular list matching
+    (else
+     (let ((result (match-pattern (car pattern) (car nodes) bindings)))
+       (if result
+           (match-list (cdr pattern) (cdr nodes) result)
            #f)))))
 
-(define (match-vector pattern expr bindings)
-  (let* ((raw-expr (if (annotated? expr)
-                       (annotated-expr expr)
-                       expr))
-         (plen (vector-length pattern))
-         (elen (vector-length raw-expr)))
-    (if (not (= plen elen))
+(define (match-list-elements patterns nodes bindings)
+  ;; Match list of patterns against list of nodes
+  (cond
+    ((and (null? patterns) (null? nodes))
+     bindings)
+    ((or (null? patterns) (null? nodes))
+     #f)
+    (else
+     (let ((result (match-pattern (car patterns) (car nodes) bindings)))
+       (if result
+           (match-list-elements (cdr patterns) (cdr nodes) result)
+           #f)))))
+
+(define (match-vector pattern nodes bindings)
+  ;; Match vector pattern against vector of CST nodes
+  (let ((plen (vector-length pattern))
+        (nlen (length nodes)))
+    (if (not (= plen nlen))
         #f
-        (let loop ((i 0) (acc bindings))
+        (let loop ((i 0) (acc bindings) (nodes nodes))
           (if (>= i plen)
               acc
               (let ((result (match-pattern (vector-ref pattern i)
-                                          (vector-ref raw-expr i)
+                                          (car nodes)
                                           acc)))
                 (if result
-                    (loop (+ i 1) result)
+                    (loop (+ i 1) result (cdr nodes))
                     #f)))))))
 
 ;;=============================================================================
 ;; Tree Walking
 
-;; walk-tree : (node => any) tree => list
-;;   Walks tree depth-first, collecting non-#f results from proc.
+;; walk-tree : (cst-node → any) cst-node → list
+;;   Walks CST depth-first, collecting non-#f results from proc.
+;;   By default, only visits semantic nodes (skips trivia).
 (define (walk-tree proc tree)
+  (walk-tree-with-trivia proc tree #f))
+
+;; walk-tree-with-trivia : (cst-node → any) cst-node boolean → list
+;;   Walks CST depth-first with optional trivia inclusion.
+;;   If include-trivia? is #t, visits whitespace and comment nodes.
+(define (walk-tree-with-trivia proc tree include-trivia?)
   (let walk ((node tree) (results '()) (depth 0))
     (if (> depth 500)
-        results
-        (let ((unwrapped (if (annotated? node)
-                            (annotated-expr node)
-                            node)))
-          (let ((result (proc node)))
-            (let ((new-results (if result
-                                  (cons result results)
-                                  results)))
-              (cond
-                ((pair? unwrapped)
-                 (walk (cdr unwrapped) (walk (car unwrapped) new-results (+ depth 1)) (+ depth 1)))
-                ((vector? unwrapped)
-                 (let loop ((i (- (vector-length unwrapped) 1))
-                           (acc new-results))
-                   (if (< i 0)
-                       acc
-                       (loop (- i 1) (walk (vector-ref unwrapped i) acc (+ depth 1))))))
-                (else new-results))))))))
+        results  ; Depth limit to prevent infinite loops
+        (let ((result (proc node)))
+          (let ((new-results (if result
+                                (cons result results)
+                                results)))
+            (cond
+              ;; List node - walk children
+              ((cst-list? node)
+               (let ((children (if include-trivia?
+                                  (cst-list-children node)
+                                  (semantic-children node))))
+                 (fold-left (lambda (acc child)
+                             (walk child acc (+ depth 1)))
+                           new-results
+                           children)))
+
+              ;; Quote node - walk quoted expression
+              ((cst-quote? node)
+               (walk (cst-quote-expr node) new-results (+ depth 1)))
+
+              ;; Vector node - walk children
+              ((cst-vector? node)
+               (let ((children (if include-trivia?
+                                  (cst-vector-children node)
+                                  (semantic-children node))))
+                 (fold-left (lambda (acc child)
+                             (walk child acc (+ depth 1)))
+                           new-results
+                           children)))
+
+              ;; Leaf nodes (atoms, strings, comments, whitespace)
+              (else new-results)))))))
 
 ;;=============================================================================
 ;; Helpers
 
 (define (take-list lst n)
+  ;; Take first n elements from list
   (if (or (null? lst) (<= n 0))
       '()
       (cons (car lst) (take-list (cdr lst) (- n 1)))))
 
 (define (drop-list lst n)
+  ;; Drop first n elements from list
   (if (or (null? lst) (<= n 0))
       lst
       (drop-list (cdr lst) (- n 1))))
-
-(define (list-length lst)
-  (let loop ((l lst) (n 0))
-    (cond
-      ((null? l) n)
-      ((not (pair? l)) #f)
-      (else (loop (cdr l) (+ n 1))))))
 
 ) ;; end library
