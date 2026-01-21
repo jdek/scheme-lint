@@ -5,11 +5,12 @@ Pluggable linter for Chez Scheme with pattern-based rules and zero dependencies.
 ## Features
 
 - **Zero dependencies**: Pure R6RS Scheme + minimal Chez features
+- **CST-based**: Preserves all source information (formatting, comments, whitespace)
 - **Pattern matching DSL**: Write concise linting rules with powerful pattern syntax
+- **Auto-fix**: Automatically fix violations while preserving code formatting
 - **Source location tracking**: Precise file/line/column information for violations
 - **Plugin architecture**: Load custom rules from directories
 - **Configurable severity**: Filter by error/warning/style
-- **Auto-fix framework**: Extensible foundation for automatic fixes
 
 ## Quick Start
 
@@ -38,6 +39,9 @@ nix develop  # or manually set CHEZSCHEMELIBDIRS=./src
 ```bash
 # Lint files
 scheme-lint myfile.scm
+
+# Auto-fix violations
+scheme-lint --fix myfile.scm
 
 # Use custom rules directory
 scheme-lint --rules my-rules/ *.scm
@@ -89,8 +93,8 @@ The DSL makes it easy to write custom rules:
 
 ## Built-in Rules
 
-- **div-not-quotient**: Prefer R6RS `div`/`mod` over `quotient`/`modulo`
-- **import-order**: Enforce import ordering (rnrs → local → chezscheme)
+- **div-not-quotient**: Prefer R6RS `div`/`mod` over `quotient`/`modulo` (auto-fix)
+- **import-order**: Enforce import ordering (rnrs → local → chezscheme) (auto-fix)
 - **import-only-chez**: Require explicit `(only ...)` for chezscheme imports
 - **no-emacs-docstrings**: Detect invalid docstring syntax
 - **no-rnrs-all**: Disallow importing entire `(rnrs)` library
@@ -100,10 +104,10 @@ The DSL makes it easy to write custom rules:
 ```
 scheme-lint/
 ├── src/scheme-lint/       # Core libraries
-│   ├── core.sls           # Linting engine
-│   ├── reader.sls         # Source reader with location tracking
-│   ├── matcher.sls        # Pattern matching
-│   └── rules/builtin.sls  # Built-in rules
+│   ├── core.sls           # Linting engine (v2.0.0)
+│   ├── reader.sls         # CST reader preserving all source info
+│   ├── matcher.sls        # Pattern matching on CST
+│   └── discovery.sls      # Plugin discovery
 ├── scheme-lint.ss         # CLI tool
 ├── rules/                 # Default rules
 │   ├── standard/          # Production rules
@@ -133,6 +137,18 @@ scheme-lint/
       (> (length params) 5)))
   (severity style)
   (message "Function has more than 5 parameters; consider refactoring"))
+```
+
+### Rule with Auto-fix
+
+```scheme
+(rule prefer-div
+  (pattern (quotient ?a ?b))
+  (where #t)
+  (severity style)
+  (message "Use 'div' instead of 'quotient'")
+  (fix (lambda (bindings expr)
+         (string-replace-first (cst-node-text expr) "quotient" "div"))))
 ```
 
 ### Pattern Syntax

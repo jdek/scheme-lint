@@ -71,6 +71,11 @@
     make-cst-vector
     cst-vector-children
 
+    ;; Bytevector nodes
+    cst-bytevector?
+    make-cst-bytevector
+    cst-bytevector-children
+
     ;; Helpers
     trivia-node?
     semantic-children
@@ -88,7 +93,8 @@
           (rnrs io ports)
           (rnrs io simple)
           (rnrs unicode)
-          (rnrs exceptions))
+          (rnrs exceptions)
+          (rnrs bytevectors))
 
 ;;=============================================================================
 ;; Source Location Record
@@ -158,6 +164,11 @@
   (nongenerative)
   (fields children))        ; List of cst-node (includes trivia)
 
+(define-record-type (cst-bytevector make-cst-bytevector cst-bytevector?)
+  (parent cst-node)
+  (nongenerative)
+  (fields children))        ; List of cst-node (includes trivia)
+
 ;;=============================================================================
 ;; Helpers
 
@@ -175,6 +186,9 @@
     ((cst-vector? node)
      (filter (lambda (child) (not (trivia-node? child)))
              (cst-vector-children node)))
+    ((cst-bytevector? node)
+     (filter (lambda (child) (not (trivia-node? child)))
+             (cst-bytevector-children node)))
     (else '())))
 
 ;; Convert CST to S-expression (loses trivia and positions)
@@ -195,6 +209,9 @@
 
     ((cst-vector? node)
      (list->vector (map cst->sexp (semantic-children node))))
+
+    ((cst-bytevector? node)
+     (u8-list->bytevector (map cst->sexp (semantic-children node))))
 
     ((trivia-node? node)
      #f)  ; Skip trivia
@@ -553,6 +570,22 @@
           ((char=? ch #\()
            (read-vector start-line start-column start-pos))
 
+          ;; Bytevector
+          ((char=? ch #\v)
+           (get-char-tracked)  ; consume v
+           (let ((u-ch (peek-char-tracked)))
+             (unless (and (not (eof-object? u-ch)) (char=? u-ch #\u))
+               (error 'read-cst "expected 'u' after #v"))
+             (get-char-tracked)  ; consume u
+             (let ((eight-ch (peek-char-tracked)))
+               (unless (and (not (eof-object? eight-ch)) (char=? eight-ch #\8))
+                 (error 'read-cst "expected '8' after #vu"))
+               (get-char-tracked)  ; consume 8
+               (let ((paren-ch (peek-char-tracked)))
+                 (unless (and (not (eof-object? paren-ch)) (char=? paren-ch #\())
+                   (error 'read-cst "expected '(' after #vu8"))
+                 (read-bytevector start-line start-column start-pos)))))
+
           ;; Datum comment
           ((char=? ch #\;)
            (read-datum-comment start-line start-column start-pos))
@@ -641,6 +674,28 @@
             (else
              (loop (cons (read-expr) children)))))))
 
+    ;; Bytevector reader
+    (define (read-bytevector start-line start-column start-pos)
+      (get-char-tracked)  ; consume (
+      (let loop ((children '()))
+        (let ((ch (peek-char-tracked)))
+          (cond
+            ((eof-object? ch)
+             (error 'read-cst "unexpected EOF in bytevector"))
+
+            ((char=? ch #\))
+             (get-char-tracked)
+             (let* ((end-pos char-pos)
+                    (text (extract-text start-pos end-pos)))
+               (make-cst-bytevector 'bytevector
+                                   start-line start-column
+                                   start-pos end-pos
+                                   text
+                                   (reverse children))))
+
+            (else
+             (loop (cons (read-expr) children)))))))
+
     ;; Datum comment reader
     (define (read-datum-comment start-line start-column start-pos)
       (get-char-tracked)  ; consume ;
@@ -694,6 +749,14 @@
         ((string=? name "esc") #\esc)
         ((string=? name "space") #\space)
         ((string=? name "delete") #\delete)
+        ;; Hex notation: #\xHH
+        ((and (> (string-length name) 1)
+              (char=? (string-ref name 0) #\x))
+         (let ((hex-str (substring name 1 (string-length name))))
+           (let ((code (string->number hex-str 16)))
+             (if code
+                 (integer->char code)
+                 (error 'read-cst "invalid hex character code" name)))))
         ;; Single character
         ((= (string-length name) 1) (string-ref name 0))
         (else (error 'read-cst "invalid character name" name))))
