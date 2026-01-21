@@ -4,50 +4,36 @@
 ;; SPDX-License-Identifier: WTFPL
 
 (rule import-order
-  (metadata
-    (version "1.0.0")
-    (author "scheme-lint")
-    (category style)
-    (tags r6rs imports conventions)
-    (enabled-by-default #t)
-    (description "Enforces the CLAUDE.md convention that imports should be ordered: rnrs -> local -> chezscheme. This improves readability and makes dependencies clear."))
-
-  (pattern (library ?name
-             (export . ?exports)
-             (import . ?imports)
-             . ?body))
+  (pattern (import . ?imports))
 
   (where
-    ;; Check if imports are not in correct order
-    (let check-order ((imps (get-binding bindings '?imports))
-                     (state 'start)) ;; start -> rnrs -> local -> chez
-      (cond
-        ((null? imps) #f) ;; No violations if we made it through
-        (else
-          (let ((imp (car imps)))
-            ;; Extract library name from import spec
-            (let ((lib-name
-                    (if (cst-list? imp)
-                        (let ((children (semantic-children imp)))
-                          (if (pair? children)
-                              (let ((first (car children)))
-                                (if (cst-atom? first)
-                                    (let ((sym (cst-atom-value first)))
-                                      ;; Handle (only (chezscheme) ...) etc
-                                      (if (memq sym '(only except prefix rename))
-                                          (if (pair? (cdr children))
-                                              (let ((second (cadr children)))
-                                                (if (cst-list? second)
-                                                    (let ((inner (semantic-children second)))
-                                                      (if (and (pair? inner) (cst-atom? (car inner)))
-                                                          (cst-atom-value (car inner))
-                                                          #f))
-                                                    #f))
-                                              #f)
-                                          sym))
-                                    #f))
-                              #f))
-                        #f)))
+    (let ((imports (get-binding bindings '?imports)))
+      ;; Check if imports are not in correct order
+      (let check-order ((imps imports)
+                       (state 'start)) ;; start -> rnrs -> local -> chez
+        (cond
+          ((null? imps) #f) ;; No violations if we made it through
+          (else
+            (let* ((imp (car imps))
+                   ;; Extract library name from import spec
+                   (lib-name
+                      (if (cst-list? imp)
+                         (let ((children (semantic-children imp)))
+                           (if (and (pair? children) (cst-atom? (car children)))
+                               (let* ((first (car children))
+                                      (sym (cst-atom-value first)))
+                                 ;; Handle (only (chezscheme) ...) etc
+                                 (if (memq sym '(only except prefix rename))
+                                     (let ((rest (cdr children)))
+                                       (if (and (pair? rest) (cst-list? (car rest)))
+                                           (let ((inner (semantic-children (car rest))))
+                                             (if (and (pair? inner) (cst-atom? (car inner)))
+                                                 (cst-atom-value (car inner))
+                                                 #f))
+                                           #f))
+                                     sym))
+                               #f))
+                         #f)))
               (cond
                 ;; rnrs import
                 ((and lib-name
@@ -55,7 +41,7 @@
                       (let ((s (symbol->string lib-name)))
                         (and (>= (string-length s) 4)
                              (string=? (substring s 0 4) "rnrs"))))
-                 (if (eq? state 'start)
+                 (if (memq state '(start rnrs))
                      (check-order (cdr imps) 'rnrs)
                      #t)) ;; Violation: rnrs after non-rnrs
 
@@ -76,62 +62,51 @@
   (message "Imports should be ordered: rnrs -> local -> chezscheme")
 
   (fix (lambda (bindings expr)
-         ;; Extract library name from an import spec
-         (define (extract-lib-name imp)
-           (if (cst-list? imp)
-               (let ((children (semantic-children imp)))
-                 (if (pair? children)
-                     (let ((first (car children)))
-                       (if (cst-atom? first)
-                           (let ((sym (cst-atom-value first)))
-                             ;; Handle (only (chezscheme) ...) etc
-                             (if (memq sym '(only except prefix rename))
-                                 (if (pair? (cdr children))
-                                     (let ((second (cadr children)))
-                                       (if (cst-list? second)
-                                           (let ((inner (semantic-children second)))
-                                             (if (and (pair? inner) (cst-atom? (car inner)))
-                                                 (cst-atom-value (car inner))
-                                                 #f))
-                                           #f))
-                                     #f)
-                                 sym))
-                           #f))
-                     #f))
-               #f))
-
-         ;; Classify import as 'rnrs, 'chez, or 'local
-         (define (classify-import imp)
-           (let ((lib-name (extract-lib-name imp)))
-             (cond
-               ((and lib-name
-                     (symbol? lib-name)
-                     (let ((s (symbol->string lib-name)))
-                       (and (>= (string-length s) 4)
-                            (string=? (substring s 0 4) "rnrs"))))
-                'rnrs)
-               ((eq? lib-name 'chezscheme) 'chez)
-               (else 'local))))
-
-         ;; Sort imports into three groups
+         ;; Reorder imports: rnrs -> local -> chezscheme
          (let* ((imports (get-binding bindings '?imports))
                 (rnrs-imps '())
                 (local-imps '())
                 (chez-imps '()))
 
-           ;; Classify all imports
+           ;; Helper to extract library name from import spec
+           (define (get-lib-name imp)
+             (if (cst-list? imp)
+                 (let ((children (semantic-children imp)))
+                   (if (and (pair? children) (cst-atom? (car children)))
+                       (let* ((first (car children))
+                              (sym (cst-atom-value first)))
+                         ;; Handle (only (chezscheme) ...) etc
+                         (if (memq sym '(only except prefix rename))
+                             (let ((rest (cdr children)))
+                               (if (and (pair? rest) (cst-list? (car rest)))
+                                   (let ((inner (semantic-children (car rest))))
+                                     (if (and (pair? inner) (cst-atom? (car inner)))
+                                         (cst-atom-value (car inner))
+                                         #f))
+                                   #f))
+                             sym))
+                       #f))
+                 #f))
+
+           ;; Classify each import
            (let loop ((imps imports))
              (when (pair? imps)
                (let* ((imp (car imps))
-                      (class (classify-import imp))
+                      (lib-name (get-lib-name imp))
                       (text (cst-node-text imp)))
-                 (case class
-                   ((rnrs) (set! rnrs-imps (append rnrs-imps (list text))))
-                   ((chez) (set! chez-imps (append chez-imps (list text))))
-                   ((local) (set! local-imps (append local-imps (list text)))))
+                 (cond
+                   ((and lib-name (symbol? lib-name)
+                         (let ((s (symbol->string lib-name)))
+                           (and (>= (string-length s) 4)
+                                (string=? (substring s 0 4) "rnrs"))))
+                    (set! rnrs-imps (append rnrs-imps (list text))))
+                   ((eq? lib-name 'chezscheme)
+                    (set! chez-imps (append chez-imps (list text))))
+                   (else
+                    (set! local-imps (append local-imps (list text)))))
                  (loop (cdr imps)))))
 
-           ;; Reconstruct import statement
+           ;; Reconstruct import statement with sorted order
            (let ((all-sorted (append rnrs-imps local-imps chez-imps)))
              (string-append "(import "
                            (let join ((items all-sorted))

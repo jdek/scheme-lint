@@ -31,12 +31,12 @@
           (rnrs io simple)
           (rnrs records syntactic)
           (rnrs eval)
-          (only (chezscheme) directory-list
-                             file-directory?
-                             getenv)
           (scheme-lint core)
           (scheme-lint config)
-          (scheme-lint rules builtin))
+          (scheme-lint rules builtin)
+          (only (chezscheme) directory-list
+                             file-directory?
+                             getenv))
 
 ;;=============================================================================
 ;; Rule Metadata

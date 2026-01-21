@@ -51,9 +51,9 @@
           (rnrs exceptions)
           (rnrs conditions)
           (rnrs records syntactic)
-          (prefix (chezscheme) chez:)
           (scheme-lint reader)
-          (scheme-lint matcher))
+          (scheme-lint matcher)
+          (prefix (chezscheme) chez:))
 
 ;;=============================================================================
 ;; Version
@@ -314,17 +314,30 @@
     (error 'eval-rule-dsl "Expected (rule ...) form" expr))
 
   (let* ((name (cadr expr))
-         (body (cddr expr))
-         (pattern (cadr (assq 'pattern body)))
+         (body-raw (cddr expr))
+         ;; Filter out metadata clause
+         (body (filter (lambda (clause)
+                         (not (and (pair? clause) (eq? (car clause) 'metadata))))
+                       body-raw))
+         (pattern-entry (assq 'pattern body))
+         (pattern (if pattern-entry
+                     (cadr pattern-entry)
+                     (error 'eval-rule-dsl "Missing 'pattern' clause" name)))
          (where (let ((w (assq 'where body)))
                   (if w (cadr w) #t)))
-         (severity-sym (cadr (assq 'severity body)))
+         (severity-entry (assq 'severity body))
+         (severity-sym (if severity-entry
+                          (cadr severity-entry)
+                          (error 'eval-rule-dsl "Missing 'severity' clause" name)))
          (severity (case severity-sym
                     ((error) severity/error)
                     ((warning) severity/warning)
                     ((style) severity/style)
                     (else severity/warning)))
-         (message (cadr (assq 'message body)))
+         (message-entry (assq 'message body))
+         (message (if message-entry
+                     (cadr message-entry)
+                     (error 'eval-rule-dsl "Missing 'message' clause" name)))
          (fix (let ((f (assq 'fix body)))
                (if f (cadr f) #f))))
 
