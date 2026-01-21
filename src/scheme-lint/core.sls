@@ -21,6 +21,12 @@
           lint-violation-code
           lint-violation-fix
 
+          ;; CST transformation specs
+          make-cst-transform
+          cst-transform?
+          cst-transform-type
+          cst-transform-nodes
+
           lint-file
           lint-string
           load-rule
@@ -36,9 +42,7 @@
           eval-rule-dsl
           make-plugin-environment
 
-          ;; Helpers for fix expressions
-          string-contains
-          string-replace-first)
+)
 
   (import (rnrs base)
           (rnrs control)
@@ -86,11 +90,20 @@
 ;;=============================================================================
 ;; Violation Definition
 
+;; CST transformation spec
+;; Describes how to transform a CST node
+(define-record-type (cst-transform make-cst-transform cst-transform?)
+  (nongenerative)
+  (sealed #t)
+  (fields type    ; Symbol: 'replace | 'insert-before | 'insert-after | 'delete
+          nodes)) ; List of CST nodes (or empty for delete)
+
 ;; Violation: linting violation found in code
+;; fix is either #f (no fix) or cst-transform
 (define-record-type (lint-violation make-lint-violation lint-violation?)
   (nongenerative)
   (sealed #t)
-  (fields severity message location code fix))
+  (fields severity message location code fix node-kind))
 
 ;;=============================================================================
 ;; Linting Core
@@ -105,6 +118,7 @@
                            (string-append "File not found: " path)
                            #f
                            #f
+                           #f
                            #f))
       (guard (exn
               (else
@@ -113,6 +127,7 @@
                                                  (if (message-condition? exn)
                                                      (condition-message exn)
                                                      "unknown error"))
+                                    #f
                                     #f
                                     #f
                                     #f))))
@@ -128,14 +143,10 @@
 
 (define (lint-port port filename rules)
   ;; Lint all CST nodes from port
-  (let read-all ((nodes '()))
-    (let ((node (read-cst port filename)))
-      (if (eof-object? node)
-          (let ((tree (reverse nodes)))
-            (apply append (map (lambda (rule)
-                                (find-violations rule tree filename))
-                              rules)))
-          (read-all (cons node nodes))))))
+  (let ((tree (read-all-cst port filename)))
+    (apply append (map (lambda (rule)
+                        (find-violations rule tree filename))
+                      rules))))
 
 (define (find-violations rule tree filename)
   ;; Find all violations of rule in CST tree
@@ -150,16 +161,19 @@
 
 (define (find-matches pattern predicate tree)
   ;; Find all CST nodes matching pattern and predicate
-  (let ((all-matches
+  ;; Use walk-tree-with-trivia if pattern is ?any to include comments/whitespace
+  (let* ((include-trivia? (eq? pattern '?any))
+         (all-matches
           (apply append
                  (map (lambda (node)
-                        (walk-tree
+                        (walk-tree-with-trivia
                           (lambda (n)
                             (let ((bindings (match-pattern pattern n '())))
                               (if (and bindings (predicate bindings n))
                                   (cons bindings n)
                                   #f)))
-                          node))
+                          node
+                          include-trivia?))
                       tree))))
     ;; Deduplicate by source location
     (dedup-by-location all-matches)))
@@ -200,7 +214,8 @@
                    message
                    location
                    code
-                   fix)))
+                   fix
+                   (cst-node-kind node))))
 
 ;;=============================================================================
 ;; Auto-fixing (REAL IMPLEMENTATION)
@@ -212,72 +227,191 @@
   ;; Apply all auto-fixes to file
   (when (and (file-exists? file-path)
              (not (null? (filter lint-violation-fix violations))))
-    (let* ((fixes (filter lint-violation-fix violations))
-           (content (call-with-input-file file-path
-                     (lambda (port)
-                       (get-string-all port))))
-           (fixed (apply-fixes-to-string content fixes))
-           (temp-path (string-append file-path ".tmp")))
-      ;; Write to temp file using R6RS open-file-output-port, then atomically rename
-      (when (file-exists? temp-path)
-        (delete-file temp-path))
-      (let ((port (open-file-output-port temp-path
-                                         (file-options no-fail)
-                                         (buffer-mode block)
-                                         (native-transcoder))))
-        (put-string port fixed)
-        (close-port port))
-      (delete-file file-path)
-      (chez:rename-file temp-path file-path))))
+    (let ((fixes (filter lint-violation-fix violations)))
+      (apply-cst-based-fixes fixes file-path))))
 
-(define (apply-fixes-to-string content fixes)
-  ;; Apply all fixes to string content
-  ;; Sort fixes by position (reverse order to avoid offset issues)
-  (let ((sorted-fixes (list-sort
-                        (lambda (a b)
-                          (let ((loc-a (lint-violation-location a))
-                                (loc-b (lint-violation-location b)))
-                            (if (and loc-a loc-b)
-                                (or (> (source-location-line loc-a)
-                                      (source-location-line loc-b))
-                                    (and (= (source-location-line loc-a)
-                                           (source-location-line loc-b))
-                                         (> (source-location-column loc-a)
-                                            (source-location-column loc-b))))
-                                #f)))
-                        fixes)))
-    ;; Apply each fix
-    (fold-left apply-single-fix content sorted-fixes)))
+(define (apply-cst-based-fixes fixes file-path)
+  ;; CST-based fix application
+  (let* (;; Read CST from file
+         (cst-nodes (call-with-input-file file-path
+                      (lambda (port) (read-all-cst port file-path))))
+         ;; Build transformation map: node -> transform
+         (transform-map (make-transform-map fixes cst-nodes))
+         ;; Apply transformations to CST
+         (transformed-nodes (transform-cst-nodes cst-nodes transform-map))
+         ;; Render back to string
+         (fixed-content (render-cst-nodes transformed-nodes))
+         (temp-path (string-append file-path ".tmp")))
+    (when (file-exists? temp-path)
+      (delete-file temp-path))
+    (let ((port (open-file-output-port temp-path
+                                       (file-options no-fail)
+                                       (buffer-mode block)
+                                       (native-transcoder))))
+      (put-string port fixed-content)
+      (close-port port))
+    (delete-file file-path)
+    (chez:rename-file temp-path file-path)))
 
-(define (apply-single-fix content fix)
-  ;; Apply single fix to content
-  (let* ((location (lint-violation-location fix))
-         (code (lint-violation-code fix))
-         (replacement (lint-violation-fix fix)))
-    ;; Find the position of the code to replace
-    ;; For now, use simple string replacement
-    ;; TODO: Use precise character positions from CST
-    (string-replace-first content code replacement)))
+(define (assoc-lookup key alist)
+  ;; Lookup in association list, return #f if not found
+  (let ((pair (assoc key alist)))
+    (if pair (cdr pair) #f)))
 
-(define (string-replace-first str old new)
-  ;; Replace first occurrence of old with new in str
-  (let ((idx (string-contains str old)))
-    (if idx
-        (string-append (substring str 0 idx)
-                      new
-                      (substring str (+ idx (string-length old))
-                                (string-length str)))
-        str)))
+(define (flatten-cst nodes)
+  ;; Get all CST nodes from a tree (depth-first)
+  (apply append
+         (map (lambda (node)
+                (cons node
+                      (cond
+                        ((cst-list? node)
+                         (flatten-cst (cst-list-children node)))
+                        ((cst-vector? node)
+                         (flatten-cst (cst-vector-children node)))
+                        ((cst-quote? node)
+                         (flatten-cst (list (cst-quote-expr node))))
+                        (else '()))))
+              nodes)))
 
-(define (string-contains str substr)
-  ;; Find index of substr in str, or #f
-  (let ((slen (string-length str))
-        (sslen (string-length substr)))
-    (let loop ((i 0))
-      (cond
-        ((> (+ i sslen) slen) #f)
-        ((string=? (substring str i (+ i sslen)) substr) i)
-        (else (loop (+ i 1)))))))
+(define (make-transform-map fixes nodes)
+  ;; Build map from CST node to transformation
+  ;; Match nodes by position AND kind since multiple nodes can have same position
+  ;; Returns association list: (node . transform)
+  (let ((position-map
+         (map (lambda (violation)
+                (cons (list (source-location-line (lint-violation-location violation))
+                           (source-location-column (lint-violation-location violation))
+                           (lint-violation-node-kind violation))
+                      (lint-violation-fix violation)))
+              fixes)))
+    ;; Now map nodes to transforms based on position AND kind
+    (filter (lambda (pair) (cdr pair))  ; Remove nodes without transforms
+            (map (lambda (node)
+                   (let* ((key (list (cst-node-start-line node)
+                                    (cst-node-start-column node)
+                                    (cst-node-kind node)))
+                          (transform (assoc-lookup key position-map)))
+                     (cons node transform)))
+                 (flatten-cst nodes)))))
+
+(define (transform-cst-nodes nodes transform-map)
+  ;; Transform a list of CST nodes according to transform-map
+  ;; Returns new list of CST nodes
+  (apply append
+         (map (lambda (node)
+                (transform-cst-node node transform-map))
+              nodes)))
+
+(define (transform-cst-node node transform-map)
+  ;; Transform a single CST node
+  ;; Returns list of nodes (empty for delete, multiple for insert-before/after)
+  (let ([transform-pair (assq node transform-map)])
+    (let ([transform (if transform-pair (cdr transform-pair) #f)])
+    (cond
+      ;; Node has a transformation
+      (transform
+       (case (cst-transform-type transform)
+         ((delete) '())
+         ((replace) (cst-transform-nodes transform))
+         ((insert-before)
+          (append (cst-transform-nodes transform)
+                  (list (transform-node-children node transform-map))))
+         ((insert-after)
+          (append (list (transform-node-children node transform-map))
+                  (cst-transform-nodes transform)))
+         (else (list (transform-node-children node transform-map)))))
+
+      ;; No transformation - recursively transform children
+      (else
+       (list (transform-node-children node transform-map)))))))
+
+(define (transform-node-children node transform-map)
+  ;; Transform children of a node, keeping the node structure
+  (cond
+    ((cst-list? node)
+     (let ((transformed-children (transform-cst-nodes (cst-list-children node) transform-map)))
+       (make-cst-list (cst-node-kind node)
+                     (cst-node-start-line node)
+                     (cst-node-start-column node)
+                     (cst-node-start-pos node)
+                     (cst-node-end-pos node)
+                     (render-cst-nodes (list node))  ; Use original text as fallback
+                     (cst-list-open-delim node)
+                     transformed-children
+                     (cst-list-close-delim node))))
+
+    ((cst-vector? node)
+     (let ((transformed-children (transform-cst-nodes (cst-vector-children node) transform-map)))
+       (make-cst-vector (cst-node-kind node)
+                       (cst-node-start-line node)
+                       (cst-node-start-column node)
+                       (cst-node-start-pos node)
+                       (cst-node-end-pos node)
+                       (render-cst-nodes (list node))
+                       transformed-children)))
+
+    ((cst-quote? node)
+     (let ((transformed-expr-list (transform-cst-node (cst-quote-expr node) transform-map)))
+       ;; Quote should have exactly one child
+       (if (null? transformed-expr-list)
+           node  ; Keep original if child was deleted
+           (make-cst-quote (cst-node-kind node)
+                          (cst-node-start-line node)
+                          (cst-node-start-column node)
+                          (cst-node-start-pos node)
+                          (cst-node-end-pos node)
+                          (render-cst-nodes (list node))
+                          (cst-quote-type node)
+                          (cst-quote-prefix node)
+                          (car transformed-expr-list)))))
+
+    ;; Leaf nodes - return as-is
+    (else node)))
+
+(define (render-cst-nodes nodes)
+  ;; Render list of CST nodes back to string
+  ;; Must recursively render structure, not use cached text
+  (call-with-string-output-port
+    (lambda (port)
+      (for-each (lambda (node)
+                  (render-cst-node node port))
+                nodes))))
+
+(define (render-cst-node node port)
+  ;; Render a single CST node to port
+  (cond
+    ((cst-list? node)
+     (display (cst-list-open-delim node) port)
+     (for-each (lambda (child) (render-cst-node child port))
+               (cst-list-children node))
+     (display (cst-list-close-delim node) port))
+
+    ((cst-vector? node)
+     (display "#(" port)
+     (for-each (lambda (child) (render-cst-node child port))
+               (cst-vector-children node))
+     (display ")" port))
+
+    ((cst-quote? node)
+     (display (cst-quote-prefix node) port)
+     (render-cst-node (cst-quote-expr node) port))
+
+    ;; Leaf nodes - use their text directly
+    ((cst-atom? node)
+     (display (cst-node-text node) port))
+
+    ((cst-string? node)
+     (display (cst-node-text node) port))
+
+    ((cst-comment? node)
+     (display (cst-node-text node) port))
+
+    ((cst-whitespace? node)
+     (display (cst-whitespace-text node) port))
+
+    (else
+     ;; Fallback
+     (display (cst-node-text node) port))))
 
 ;;=============================================================================
 ;; Rule Loading

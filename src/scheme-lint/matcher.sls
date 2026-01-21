@@ -14,7 +14,11 @@
           pattern-var?
           pattern-splice?
           get-binding
-          get-semantic-value)
+          get-semantic-value
+
+          ;; CST construction helpers for fix functions
+          make-comment-node
+          make-whitespace-node)
   (import (rnrs base)
           (rnrs control)
           (rnrs lists)
@@ -250,5 +254,32 @@
   (if (or (null? lst) (<= n 0))
       lst
       (drop-list (cdr lst) (- n 1))))
+
+;;=============================================================================
+;; CST Node Construction Helpers
+
+;; make-comment-node : string => cst-comment
+;;   Create a comment CST node with the given text.
+;;   Position fields are set to 0 (will be ignored during rendering).
+(define (make-comment-node text)
+  (make-cst-comment 'comment 0 0 0 0
+                   text
+                   (if (and (> (string-length text) 0)
+                           (char=? (string-ref text 0) #\;))
+                       (substring text 1 (string-length text))
+                       text)
+                   'line))
+
+;; make-whitespace-node : string => cst-whitespace
+;;   Create a whitespace CST node.
+(define (make-whitespace-node text)
+  (let ((has-newline? (let loop ((i 0))
+                        (cond
+                          ((>= i (string-length text)) #f)
+                          ((char=? (string-ref text i) #\newline) #t)
+                          (else (loop (+ i 1)))))))
+    (make-cst-whitespace 'whitespace 0 0 0 0
+                        text
+                        text has-newline?)))
 
 ) ;; end library

@@ -233,11 +233,12 @@
 ;; read-all-cst : Input-Port String → List[cst-node]
 ;;   Read all CSTs from port
 (define (read-all-cst port filename)
-  (let loop ((nodes '()))
-    (let ((node (read-cst port filename)))
-      (if (eof-object? node)
-          (reverse nodes)
-          (loop (cons node nodes))))))
+  (let ((reader (make-reader port filename)))
+    (let loop ((nodes '()))
+      (let ((node (reader)))
+        (if (eof-object? node)
+            (reverse nodes)
+            (loop (cons node nodes)))))))
 
 ;; make-reader : Input-Port String → (→ cst-node | eof)
 ;;   Create a stateful reader closure
@@ -368,15 +369,90 @@
                                text
                                open-delim (reverse children) ch)))
 
-              ;; Dotted pair
+              ;; Dotted pair or atom starting with dot
               ((char=? ch #\.)
-               (read-dotted-tail start-line start-column start-pos open-delim children))
+               ;; Peek ahead to see if it's a dotted pair (. followed by whitespace/delimiter)
+               ;; or an atom like ... or .foo
+               (let ((dot-start-line line)
+                     (dot-start-col column)
+                     (dot-start-pos char-pos))
+                 (get-char-tracked)  ; consume .
+                 (let ((ch2 (peek-char-tracked)))
+                   (cond
+                     ;; . followed by whitespace or close paren = dotted pair
+                     ((or (eof-object? ch2)
+                          (char-whitespace? ch2)
+                          (char=? ch2 #\))
+                          (char=? ch2 #\]))
+                      ;; Put back the consumed state and treat as dotted pair
+                      ;; But first create dot atom to include in children
+                      (let ((dot-atom (make-cst-atom 'atom
+                                                    dot-start-line dot-start-col
+                                                    dot-start-pos char-pos
+                                                    "." (string->symbol "."))))
+                        (read-dotted-tail-with-dot start-line start-column start-pos open-delim
+                                                  (cons dot-atom children))))
+                     ;; Otherwise it's part of an atom, go back and read normally
+                     (else
+                      ;; Can't easily unget, so we need to handle this in read-atom
+                      ;; For now, create a dot atom and continue reading
+                      (let ((dot-atom (make-cst-atom 'atom
+                                                    dot-start-line dot-start-col
+                                                    dot-start-pos char-pos
+                                                    "." (string->symbol "."))))
+                        (loop (cons dot-atom children))))))))
 
               ;; Regular element
               (else
                (loop (cons (read-expr) children))))))))
 
-    ;; Dotted pair tail
+    ;; Dotted pair tail with dot already in children
+    (define (read-dotted-tail-with-dot start-line start-column start-pos open-delim children)
+      ;; Children already includes the dot atom, now read whitespace/tail/close
+      (let loop-children ((children children))
+        (let ((ch (peek-char-tracked)))
+          (cond
+            ((eof-object? ch)
+             (error 'read-cst "unexpected EOF after dot"))
+            ((char-whitespace? ch)
+             (loop-children (cons (read-expr) children)))  ; Include whitespace
+            ((char=? ch #\;)
+             (loop-children (cons (read-expr) children)))  ; Include comments
+            ((or (char=? ch #\)) (char=? ch #\]))
+             ;; Reached end without tail - just a dot atom
+             (get-char-tracked)
+             (let* ((end-pos char-pos)
+                    (text (extract-text start-pos end-pos)))
+               (make-cst-list 'list
+                            start-line start-column
+                            start-pos end-pos
+                            text
+                            open-delim (reverse children) ch)))
+            (else
+             ;; Read tail element and continue to close paren
+             (let ((tail (read-expr)))
+               (let loop-rest ((children (cons tail children)))
+                 (let ((ch (peek-char-tracked)))
+                   (cond
+                     ((eof-object? ch)
+                      (error 'read-cst "unexpected EOF after dotted tail"))
+                     ((char-whitespace? ch)
+                      (loop-rest (cons (read-expr) children)))
+                     ((char=? ch #\;)
+                      (loop-rest (cons (read-expr) children)))
+                     ((or (char=? ch #\)) (char=? ch #\]))
+                      (get-char-tracked)
+                      (let* ((end-pos char-pos)
+                             (text (extract-text start-pos end-pos)))
+                        (make-cst-list 'list
+                                     start-line start-column
+                                     start-pos end-pos
+                                     text
+                                     open-delim (reverse children) ch)))
+                     (else
+                      (error 'read-cst "expected closing delimiter after dotted tail")))))))))))
+
+    ;; Dotted pair tail (LEGACY - now using read-dotted-tail-with-dot)
     (define (read-dotted-tail start-line start-column start-pos open-delim children)
       (let ((dot-line line)
             (dot-col column))
