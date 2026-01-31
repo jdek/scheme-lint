@@ -16,7 +16,8 @@
     ;; (enable div-not-quotient import-order)
 
     ;; Disable specific rules
-    (disable no-emacs-docstrings))
+    ;;(disable no-emacs-docstrings)
+    )
 
   ;; Override severity for specific rules
   (severity-overrides

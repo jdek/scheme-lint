@@ -15,9 +15,9 @@
 ;; Note: Most rules are now loaded as plugins from rules/ directory.
 ;; These builtins are kept for backward compatibility but are empty.
 
+;; Return list of all built-in rules.
+;; Note: Most rules are now loaded as plugins from rules/ directory.
 (define (get-builtin-rules)
-  "Return list of all built-in rules.
-   Note: Most rules are now loaded as plugins from rules/ directory."
   '())
 
 ) ;; end library

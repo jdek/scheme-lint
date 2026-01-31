@@ -89,8 +89,8 @@
     (deduplicate-rules-by-name
       (append builtin-infos user-infos config-infos cli-infos))))
 
+;; Discover built-in rules
 (define (discover-builtin-rules)
-  "Discover built-in rules"
   (map (lambda (rule)
          (make-rule-info rule
                         (make-rule-metadata "1.0.0"
@@ -102,16 +102,16 @@
                         "<builtin>"))
        (get-builtin-rules)))
 
+;; Discover rules from user directory
 (define (discover-user-rules)
-  "Discover rules from user directory"
   (let ((user-dir (string-append (get-home-directory)
                                  "/.config/scheme-lint/rules")))
     (if (file-directory? user-dir)
         (load-rules-from-directory user-dir "user")
         '())))
 
+;; Discover rules from config-specified directories
 (define (discover-config-rules cfg)
-  "Discover rules from config-specified directories"
   (apply append
          (map (lambda (dir)
                 (if (file-directory? dir)
@@ -119,8 +119,8 @@
                     '()))
               (config-rules-dirs cfg))))
 
+;; Discover rules from CLI-specified directory
 (define (discover-cli-rules cli-dir)
-  "Discover rules from CLI-specified directory"
   (if (file-directory? cli-dir)
       (load-rules-from-directory cli-dir "cli")
       '()))
@@ -154,8 +154,8 @@
               (else
                (loop (read port) infos))))))))
 
+;; Load all .scm files from directory with metadata
 (define (load-rules-from-directory dir-path source-type)
-  "Load all .scm files from directory with metadata"
   (let ((entries (directory-list dir-path)))
     (apply append
            (map (lambda (entry)
@@ -169,16 +169,16 @@
                         '())))
                 entries))))
 
+;; Extract metadata clause from DSL rule
 (define (extract-metadata-from-dsl dsl-expr)
-  "Extract metadata clause from DSL rule"
   (let* ((body (cddr dsl-expr))
          (metadata-clause (assq 'metadata body)))
     (if metadata-clause
         (parse-metadata-clause (cdr metadata-clause))
         (default-metadata))))
 
+;; Parse metadata clause into rule-metadata record
 (define (parse-metadata-clause metadata-body)
-  "Parse metadata clause into rule-metadata record"
   (let ((version (cadr (or (assq 'version metadata-body) '(#f "1.0.0"))))
         (author (cadr (or (assq 'author metadata-body) '(#f "unknown"))))
         (category (cadr (or (assq 'category metadata-body) '(#f style))))
@@ -187,8 +187,8 @@
         (description (cadr (or (assq 'description metadata-body) '(#f "")))))
     (make-rule-metadata version author category tags enabled description)))
 
+;; Evaluate DSL rule for discovery (re-exports from core)
 (define (eval-rule-dsl-for-discovery dsl-expr)
-  "Evaluate DSL rule for discovery (re-exports from core)"
   (eval-rule-dsl dsl-expr))
 
 ;;=============================================================================
@@ -215,8 +215,8 @@
 ;;=============================================================================
 ;; Deduplication
 
+;; Remove duplicate rules by name, keeping last occurrence
 (define (deduplicate-rules-by-name rule-infos)
-  "Remove duplicate rules by name, keeping last occurrence"
   (let loop ((infos (reverse rule-infos))
              (seen '())
              (result '()))
@@ -231,8 +231,8 @@
 ;;=============================================================================
 ;; Helpers
 
+;; Get user's home directory
 (define (get-home-directory)
-  "Get user's home directory"
   (or (getenv "HOME")
       "/tmp"))
 

@@ -70,7 +70,7 @@
 ;;=============================================================================
 ;; Pattern Matching
 
-;; match-pattern : pattern cst-node alist → alist | #f
+;; match-pattern : pattern cst-node alist -> alist | #f
 ;;   Matches pattern against CST node, accumulating bindings.
 ;;   Automatically skips trivia when matching list structures.
 (define (match-pattern pattern node bindings)
@@ -195,13 +195,13 @@
 ;;=============================================================================
 ;; Tree Walking
 
-;; walk-tree : (cst-node → any) cst-node → list
+;; walk-tree : (cst-node -> any) cst-node -> list
 ;;   Walks CST depth-first, collecting non-#f results from proc.
 ;;   By default, only visits semantic nodes (skips trivia).
 (define (walk-tree proc tree)
   (walk-tree-with-trivia proc tree #f))
 
-;; walk-tree-with-trivia : (cst-node → any) cst-node boolean → list
+;; walk-tree-with-trivia : (cst-node -> any) cst-node boolean -> list
 ;;   Walks CST depth-first with optional trivia inclusion.
 ;;   If include-trivia? is #t, visits whitespace and comment nodes.
 (define (walk-tree-with-trivia proc tree include-trivia?)

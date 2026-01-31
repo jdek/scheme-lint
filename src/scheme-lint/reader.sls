@@ -224,13 +224,13 @@
 ;;=============================================================================
 ;; CST Reader
 
-;; read-cst : Input-Port String → cst-node | eof-object
+;; read-cst : Input-Port String -> cst-node | eof-object
 ;;   Read one CST from port
 (define (read-cst port filename)
   (let ((reader (make-reader port filename)))
     (reader)))
 
-;; read-all-cst : Input-Port String → List[cst-node]
+;; read-all-cst : Input-Port String -> List[cst-node]
 ;;   Read all CSTs from port
 (define (read-all-cst port filename)
   (let ((reader (make-reader port filename)))
@@ -240,7 +240,7 @@
             (reverse nodes)
             (loop (cons node nodes)))))))
 
-;; make-reader : Input-Port String → (→ cst-node | eof)
+;; make-reader : Input-Port String -> (-> cst-node | eof)
 ;;   Create a stateful reader closure
 (define (make-reader port filename)
   (let ((line 1)

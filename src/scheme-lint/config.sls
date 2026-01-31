@@ -48,8 +48,8 @@
 ;;=============================================================================
 ;; Default Configuration
 
+;; Return default configuration
 (define (default-config)
-  "Return default configuration"
   (make-config 'style       ;; min-severity
                '()          ;; rules-dirs (empty, will use CLI default)
                '()          ;; enabled-rules (empty = all enabled)
@@ -69,8 +69,8 @@
       (let ((expr (read port)))
         (parse-config-expr expr)))))
 
+;; Parse config S-expression into config record
 (define (parse-config-expr expr)
-  "Parse config S-expression into config record"
   (unless (and (pair? expr) (eq? (car expr) 'config))
     (error 'parse-config-expr "Config must start with (config ...)" expr))
 
@@ -83,22 +83,22 @@
       (parse-severity-overrides body)
       (parse-ignore-patterns body))))
 
+;; Extract min-severity from config body
 (define (parse-min-severity body)
-  "Extract min-severity from config body"
   (let ((clause (assq 'min-severity body)))
     (if clause
         (cadr clause)
         'style)))
 
+;; Extract rules-dirs from config body
 (define (parse-rules-dirs body)
-  "Extract rules-dirs from config body"
   (let ((clause (assq 'rules-dirs body)))
     (if clause
         (cdr clause)
         '())))
 
+;; Extract enabled rules from config body
 (define (parse-enabled-rules body)
-  "Extract enabled rules from config body"
   (let ((rules-clause (assq 'rules body)))
     (if rules-clause
         (let ((enable-clause (assq 'enable (cdr rules-clause))))
@@ -107,8 +107,8 @@
               '()))
         '())))
 
+;; Extract disabled rules from config body
 (define (parse-disabled-rules body)
-  "Extract disabled rules from config body"
   (let ((rules-clause (assq 'rules body)))
     (if rules-clause
         (let ((disable-clause (assq 'disable (cdr rules-clause))))
@@ -117,8 +117,8 @@
               '()))
         '())))
 
+;; Extract severity overrides from config body
 (define (parse-severity-overrides body)
-  "Extract severity overrides from config body"
   (let ((clause (assq 'severity-overrides body)))
     (if clause
         ;; Convert flat list to alist: (rule1 sev1 rule2 sev2) => ((rule1 . sev1) (rule2 . sev2))
@@ -129,8 +129,8 @@
                     (parse-pairs (cddr items)))))
         '())))
 
+;; Extract ignore patterns from config body
 (define (parse-ignore-patterns body)
-  "Extract ignore patterns from config body"
   (let ((clause (assq 'ignore body)))
     (if clause
         (cdr clause)
@@ -152,15 +152,15 @@
                 #f
                 (search parent)))))))
 
+;; Normalize path by removing trailing slashes
 (define (normalize-path path)
-  "Normalize path by removing trailing slashes"
   (if (and (> (string-length path) 1)
            (char=? (string-ref path (- (string-length path) 1)) #\/))
       (substring path 0 (- (string-length path) 1))
       path))
 
+;; Get parent directory of path
 (define (parent-directory path)
-  "Get parent directory of path"
   (let loop ((i (- (string-length path) 1)))
     (cond
       ((< i 0) #f)
@@ -193,8 +193,8 @@
     ;; Merge all configs (later overrides earlier)
     (fold-left merge-configs (car configs) (cdr configs))))
 
+;; Get user's home directory
 (define (get-home-directory)
-  "Get user's home directory"
   (or (getenv "HOME")
       "/tmp"))
 
@@ -225,8 +225,8 @@
     ;; ignore-patterns: merge (union)
     (merge-string-lists (config-ignore-patterns cfg1) (config-ignore-patterns cfg2))))
 
+;; Merge two lists of rule names, removing duplicates
 (define (merge-rule-lists list1 list2)
-  "Merge two lists of rule names, removing duplicates"
   (let add-new ((lst list2) (result list1))
     (if (null? lst)
         result
@@ -234,8 +234,8 @@
             (add-new (cdr lst) result)
             (add-new (cdr lst) (cons (car lst) result))))))
 
+;; Merge two lists of strings, removing duplicates
 (define (merge-string-lists list1 list2)
-  "Merge two lists of strings, removing duplicates"
   (let add-new ((lst list2) (result list1))
     (if (null? lst)
         result
@@ -243,8 +243,8 @@
             (add-new (cdr lst) result)
             (add-new (cdr lst) (cons (car lst) result))))))
 
+;; Merge two alists, with alist2 values overriding alist1
 (define (merge-alists alist1 alist2)
-  "Merge two alists, with alist2 values overriding alist1"
   (let ((result (fold-left
                   (lambda (acc pair)
                     (if (assq (car pair) alist2)
